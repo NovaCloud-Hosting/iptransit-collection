@@ -58,20 +58,6 @@ process_tunnel() {
                     echo "Warning: $TUNNEL_IF already exists. Is it already up?"
                 fi
                 ;;
-            wireguard)
-                # Up: WireGuard setup
-                [[ -n "${WG_PK:-}" && -n "${WG_PUBK:-}" && -n "${ENDPOINT_REMOTE:-}" && -n "${WG_PORT:-}" ]] || { echo "Error: WG_PK, WG_PUBK, ENDPOINT_REMOTE, or WG_PORT not set" >&2; exit 1; }
-                endpoint_ip="${ENDPOINT_REMOTE}"
-                if ! ip link show dev "$TUNNEL_IF" >/dev/null 2>&1; then
-                    ip link add dev "$TUNNEL_IF" type wireguard || { echo "Failed to create WireGuard interface" >&2; exit 1; }
-                else
-                    echo "Warning: $TUNNEL_IF already exists. Is it already up?"
-                fi
-                wg set "$TUNNEL_IF" private-key <(echo "$WG_PK") fwmark "${WG_FWMARK:-0}" || { echo "Failed to set WireGuard private-key" >&2; exit 1; }
-                wg set "$TUNNEL_IF" peer "$WG_PUBK" endpoint "${endpoint_ip}:${WG_PORT}" persistent-keepalive "${WG_KEEPALIVE:-25}" allowed-ips "${WG_ALLOWED_IPS:-0.0.0.0/0,::/0}" || { echo "Failed to configure WireGuard peer" >&2; exit 1; }
-                ip link set dev "$TUNNEL_IF" up || { echo "Failed to bring $TUNNEL_IF up" >&2; exit 1; }
-                echo "WireGuard interface $TUNNEL_IF configured and up"
-                ;;
             *) echo "Error: Unsupported TUNNEL_TYPE $TUNNEL_TYPE" >&2; exit 1;;
         esac
     elif [[ "$action" == "down" ]]; then
