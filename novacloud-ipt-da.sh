@@ -11,9 +11,6 @@ error_handler() {
 }
 trap 'error_handler $LINENO' ERR
 
-# Convert to lowercase helper
-to_lower() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
-
 # Usage message
 usage() {
     echo "Usage: $0 <config_file> <up|down>"
@@ -33,8 +30,7 @@ preprocess_address() {
 process_tunnel() {
     if [[ "$action" == "up" ]]; then
         # Create tunnel
-        [[ -n "${TUNNEL_TYPE:-}" ]] || { echo "Error: TUNNEL_TYPE not set" >&2; exit 1; }
-        TUNNEL_TYPE=$(to_lower "${TUNNEL_TYPE}")
+        [[ -n "${TUNNEL_TYPE:-}" && -n "${ADDRESSES:-}" ]] || { echo "Error: TUNNEL_TYPE, GATEWAY_IPV4, GATEWAY_IPV6 or ADDRESSES not set" >&2; exit 1; }
         case "$TUNNEL_TYPE" in
             gre|gretap)
                 [[ -n "${ENDPOINT_REMOTE:-}" && -n "${ENDPOINT_LOCAL:-}" ]] || { echo "Error: ENDPOINT_REMOTE or ENDPOINT_LOCAL not set" >&2; exit 1; }
@@ -112,13 +108,13 @@ process_default_route() {
                 if ip -4 route show table main | grep -q '^default '; then
                     echo "IPv4 default route exists on main"
                     if [[ "$endpoint_is_ipv6" == false ]]; then
-                        ip -4 route add $(ip -4 route show table main default | sed "s/^default/${ENDPOINT_REMOTE}/") table main
+                        ip -4 route add $(ip -4 route show table main default | sed "s/^default/${ENDPOINT_REMOTE}/") table main || { echo "Error: failed while adding route for $ENDPOINT_REMOTE"; exit 1; }
                     fi
-                    ip -4 route add $(ip -4 route show table main default) table $ROUTE_TABLE
+                    ip -4 route add $(ip -4 route show table main default) table $ROUTE_TABLE || { echo "Error: failed while cloning default route to $ROUTE_TABLE"; exit 1; }
                     pkill dhclient || echo "DHCP client not running."
                     for address in $(ip -4 addr show dev $(ip -4 route show table $ROUTE_TABLE default | sed -n 's/.* dev \([^ ]*\).*/\1/p') | sed -n 's/.*inet \([0-9]\{1,3\}\(\.[0-9]\{1,3\}\)\{3\}\).*/\1/p'); do
-                        ip -4 rule add from ${address} table $ROUTE_TABLE
-                        ip -4 addr change ${address} dev $(ip -4 route show table $ROUTE_TABLE default | sed -n 's/.* dev \([^ ]*\).*/\1/p') # Fuck DHCP
+                        ip -4 rule add from ${address} table $ROUTE_TABLE || { echo "Error: failed while adding IPv4 $address rule to $ROUTE_TABLE"; exit 1; }
+                        ip -4 addr change ${address} dev $(ip -4 route show table $ROUTE_TABLE default | sed -n 's/.* dev \([^ ]*\).*/\1/p') || { echo "Error: failed while making sure that IPv4 $address is static."; exit 1; } # Fuck DHCP
                     done
                 else
                     echo "No IPv4 default route on main"
@@ -127,7 +123,7 @@ process_default_route() {
                         exit 1
                     fi
                 fi
-                ip -4 route change default via $GATEWAY_IPV4 dev $TUNNEL_IF table main || ip -4 route change default via $GATEWAY_IPV4 dev $TUNNEL_IF table main onlink
+                ip -4 route change default via $GATEWAY_IPV4 dev $TUNNEL_IF table main onlink || { ip -4 route del default table main && ip -4 route add default via $GATEWAY_IPV4 dev $TUNNEL_IF table main onlink; } || { echo "Error: failed while adding Default-route IPv4 for Tunnel to main-table."; exit 1; }
             fi
 
             if [[ ${#ipv6_addrs[@]} -gt 0 ]]; then
@@ -150,7 +146,7 @@ process_default_route() {
                         exit 1
                     fi
                 fi
-                ip -6 route change default via $GATEWAY_IPV6 dev $TUNNEL_IF table main || ip -6 route change default via $GATEWAY_IPV6 dev $TUNNEL_IF table main onlink
+                ip -6 route change default via $GATEWAY_IPV6 dev $TUNNEL_IF table main onlink || { ip -6 route del default table main && ip -6 route add default via $GATEWAY_IPV6 dev $TUNNEL_IF table main onlink; } || { echo "Error: failed while adding Default-route IPv6 for Tunnel to main-table."; exit 1; }
             fi
 
         elif [[ "$action" == "down" ]]; then
@@ -158,7 +154,7 @@ process_default_route() {
             # IPv4 default-route cleanup
             if ip -4 route show table "$ROUTE_TABLE" | grep -q '^default '; then
                 echo "IPv4 default route exists in table $ROUTE_TABLE"
-                ip -4 route change $(ip -4 route show table $ROUTE_TABLE default) table main || echo "Error: Cannot restore original default ipv4 route, possibly the table is in an unclean state."
+                ip -4 route change $(ip -4 route show table $ROUTE_TABLE default) table main || { ip -4 route del default table main && ip -4 route add $(ip -4 route show table $ROUTE_TABLE default) table main; } || echo "Error: Cannot restore original default ipv4 route, possibly the table is in an unclean state."
             else
                 echo "No IPv4 default route in table $ROUTE_TABLE"
             fi
@@ -168,7 +164,7 @@ process_default_route() {
             # IPv6 default-route cleanup
             if ip -6 route show table "$ROUTE_TABLE" | grep -q '^default '; then
                 echo "IPv6 default route exists in table $ROUTE_TABLE"
-                ip -6 route change $(ip -6 route show table $ROUTE_TABLE default) table main || echo "Error: Cannot restore original default ipv6 route, possibly the table is in an unclean state."
+                ip -6 route change $(ip -6 route show table $ROUTE_TABLE default) table main || { ip -6 route del default table main && ip -6 route add $(ip -6 route show table $ROUTE_TABLE default) table main; } || echo "Error: Cannot restore original default ipv6 route, possibly the table is in an unclean state."
             else
                 echo "No IPv6 default route in table $ROUTE_TABLE"
             fi
@@ -209,9 +205,10 @@ process_route() {
 
 # Main
 [[ $# -eq 2 ]] || usage
-config_file=$1; action=$(to_lower "$2"); [[ -f "$config_file" ]] || { echo "Error: Config $config_file not found" >&2; exit 1; }
+config_file=$1; action=$2; [[ -f "$config_file" ]] || { echo "Error: Config $config_file not found" >&2; exit 1; }
 # Load env
 # shellcheck disable=SC1090
+dos2unix "$config_file" # fuck windows
 source "$config_file"
 TUNNEL_IF="novacloud_da"
 
